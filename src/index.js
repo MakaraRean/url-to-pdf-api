@@ -19,6 +19,15 @@ const server = app.listen(config.PORT, () => {
 });
 enableDestroy(server);
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    logger.error(`Port ${config.PORT} is already in use. Run: kill -9 $(lsof -ti:${config.PORT})`);
+    process.exit(1);
+  } else {
+    throw err;
+  }
+});
+
 function closeServer(signal) {
   logger.info(`${signal} received`);
   logger.info('Closing http.Server ..');

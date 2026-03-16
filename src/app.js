@@ -50,6 +50,14 @@ function createApp() {
   app.use(compression({
     // Compress everything over 10 bytes
     threshold: 10,
+    // Also compress application/pdf responses (not compressible by default)
+    filter: (req, res) => {
+      const contentType = res.getHeader('Content-Type') || '';
+      if (String(contentType).includes('application/pdf')) {
+        return true;
+      }
+      return compression.filter(req, res);
+    },
   }));
 
   // Initialize routes

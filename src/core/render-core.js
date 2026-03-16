@@ -1,7 +1,63 @@
 const puppeteer = require('puppeteer');
 const _ = require('lodash');
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const config = require('../config');
 const logger = require('../util/logger')(__filename);
+
+const execFileAsync = promisify(execFile);
+
+const TARGET_SIZE_BYTES = 100 * 1024; // 100 KB
+
+async function compressPdf(inputBuffer) {
+  const ts = Date.now();
+  const tmpIn = path.join(os.tmpdir(), `pdf-in-${ts}.pdf`);
+  const tmpOut = path.join(os.tmpdir(), `pdf-out-${ts}.pdf`);
+  try {
+    fs.writeFileSync(tmpIn, inputBuffer);
+
+    await execFileAsync('gs', [
+      '-sDEVICE=pdfwrite',
+      `-sOutputFile=${tmpOut}`,
+      '-dCompatibilityLevel=1.4',
+      '-dPDFSETTINGS=/screen',
+      '-dNOPAUSE', '-dQUIET', '-dBATCH',
+      // Downsample embedded images (logos, photos) to 96 DPI
+      '-dColorImageResolution=96',
+      '-dGrayImageResolution=96',
+      '-dMonoImageResolution=96',
+      '-dDownsampleColorImages=true',
+      '-dDownsampleGrayImages=true',
+      '-dDownsampleMonoImages=true',
+      '-dColorImageDownsampleThreshold=1.0',
+      '-dGrayImageDownsampleThreshold=1.0',
+      '-dMonoImageDownsampleThreshold=1.0',
+      '-dColorImageDownsampleType=/Bicubic',
+      '-dGrayImageDownsampleType=/Bicubic',
+      '-dAutoFilterColorImages=false',
+      '-dColorImageFilter=/DCTEncode',
+      '-dAutoFilterGrayImages=false',
+      '-dGrayImageFilter=/DCTEncode',
+      // Keep fonts embedded & subsetted (required for Khmer/Unicode fonts)
+      '-dCompressFonts=true',
+      '-dSubsetFonts=true',
+      '-dEmbedAllFonts=true',
+      '-dDetectDuplicateImages=true',
+      tmpIn,
+    ]);
+
+    const compressed = fs.readFileSync(tmpOut);
+    const ratio = ((1 - compressed.length / inputBuffer.length) * 100).toFixed(1);
+    logger.info(`PDF compressed: ${(inputBuffer.length / 1024).toFixed(1)}KB -> ${(compressed.length / 1024).toFixed(1)}KB (${ratio}% reduction)`);
+
+    return compressed.length < inputBuffer.length ? compressed : inputBuffer;
+  } finally {
+    [tmpIn, tmpOut].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) { } });
+  }
+}
 
 
 async function createBrowser(opts) {
@@ -18,7 +74,7 @@ async function createBrowser(opts) {
   }
   browserOpts.headless = !config.DEBUG_MODE;
   browserOpts.args = ['--no-sandbox', '--disable-setuid-sandbox'];
-  if (!opts.enableGPU || navigator.userAgent.indexOf('Win') !== -1) {
+  if (!opts.enableGPU || process.platform === 'win32') {
     browserOpts.args.push('--disable-gpu');
   }
   return puppeteer.launch(browserOpts);
@@ -108,7 +164,7 @@ async function render(_opts = {}) {
     await page.setViewport(opts.viewport);
     if (opts.emulateScreenMedia) {
       logger.info('Emulate @media screen..');
-      await page.emulateMedia('screen');
+      await page.emulateMediaType('screen');
     }
 
     if (opts.cookies && opts.cookies.length > 0) {
@@ -122,15 +178,19 @@ async function render(_opts = {}) {
 
     if (_.isString(opts.html)) {
       logger.info('Set HTML ..');
-      await page.setContent(opts.html, opts.goto);
+      // Use 'load' for HTML content; networkidle0 can timeout when external resources are unreachable
+      await page.setContent(opts.html, { ...opts.goto, waitUntil: opts.goto.waitUntil === 'networkidle0' ? 'load' : opts.goto.waitUntil });
     } else {
       logger.info(`Goto url ${opts.url} ..`);
       await page.goto(opts.url, opts.goto);
     }
 
-    if (_.isNumber(opts.waitFor) || _.isString(opts.waitFor)) {
-      logger.info(`Wait for ${opts.waitFor} ..`);
-      await page.waitFor(opts.waitFor);
+    if (_.isNumber(opts.waitFor)) {
+      logger.info(`Wait for ${opts.waitFor}ms ..`);
+      await page.waitForTimeout(opts.waitFor);
+    } else if (_.isString(opts.waitFor)) {
+      logger.info(`Wait for selector ${opts.waitFor} ..`);
+      await page.waitForSelector(opts.waitFor);
     }
 
     if (opts.scrollPage) {
@@ -172,7 +232,8 @@ async function render(_opts = {}) {
         const height = await getFullPageHeight(page);
         opts.pdf.height = height;
       }
-      data = await page.pdf(opts.pdf);
+      const rawPdf = await page.pdf(opts.pdf);
+      data = await compressPdf(Buffer.isBuffer(rawPdf) ? rawPdf : Buffer.from(rawPdf));
     } else if (opts.output === 'html') {
       data = await page.evaluate(() => document.documentElement.innerHTML);
     } else {
