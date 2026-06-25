@@ -10,7 +10,7 @@ function validate(schema) {
     if (schema.query) {
       const { error } = schema.query.validate(req.query, { allowUnknown: false });
       if (error) {
-        const err = new Error(error.details.map(d => d.message).join(', '));
+        const err = new Error(error.details.map((d) => d.message).join(', '));
         err.status = 400;
         return next(err);
       }
@@ -18,7 +18,7 @@ function validate(schema) {
     if (schema.body) {
       const { error } = schema.body.validate(req.body, { allowUnknown: false });
       if (error) {
-        const err = new Error(error.details.map(d => d.message).join(', '));
+        const err = new Error(error.details.map((d) => d.message).join(', '));
         err.status = 400;
         return next(err);
       }
